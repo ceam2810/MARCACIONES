@@ -1,5 +1,5 @@
 const APPS_SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbyYTZ5aZu0a-tBt48FXbWk6vsV1-ILH9Nzmy6PbIoJAa5X_Aic7dlXh-FQ_ETeivgRoOw/exec";
+  "https://script.google.com/macros/s/AKfycbykCCTlqYrk5iASPKtzWngkfToOK6Qor96If6ow8f2aFjtGAFDpQSROWDitNACi_Uot/exec";
 
 const form = document.querySelector("[data-attendance-form]");
 const codigoInput = document.querySelector("#codigo");
@@ -74,6 +74,7 @@ function setStatus(type, title, message, details = {}) {
     ["Fecha", details.fecha],
     ["Hora", details.hora],
     ["Marcacion", actionLabel],
+    ["Ubicacion", details.ubicacion],
   ].filter((row) => row[1]);
 
   rows.forEach(([label, value]) => {
@@ -85,10 +86,77 @@ function setStatus(type, title, message, details = {}) {
   });
 }
 
-async function sendMark(codigo) {
+function getLocationErrorMessage(error) {
+  if (!error || typeof error.code === "undefined") {
+    return "No se pudo obtener la ubicacion del dispositivo.";
+  }
+
+  if (error.code === error.PERMISSION_DENIED) {
+    return "Permiso de ubicacion denegado. La ubicacion es obligatoria para marcar asistencia.";
+  }
+
+  if (error.code === error.POSITION_UNAVAILABLE) {
+    return "La ubicacion no esta disponible en este momento. Revisa el GPS o la conexion del dispositivo.";
+  }
+
+  if (error.code === error.TIMEOUT) {
+    return "No se obtuvo la ubicacion a tiempo. Intenta de nuevo desde un lugar con mejor senal.";
+  }
+
+  return "No se pudo obtener la ubicacion del dispositivo.";
+}
+
+function getCurrentLocation() {
+  if (!("geolocation" in navigator)) {
+    return Promise.reject(
+      new Error("Este navegador no soporta geolocalizacion."),
+    );
+  }
+
+  if (window.isSecureContext === false) {
+    return Promise.reject(
+      new Error(
+        "La geolocalizacion requiere abrir la app en HTTPS o localhost.",
+      ),
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const ubicacion = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        };
+
+        if (
+          Number.isFinite(ubicacion.lat) &&
+          Number.isFinite(ubicacion.lng) &&
+          Number.isFinite(ubicacion.accuracy)
+        ) {
+          resolve(ubicacion);
+          return;
+        }
+
+        reject(new Error("El dispositivo devolvio una ubicacion invalida."));
+      },
+      (error) => {
+        reject(new Error(getLocationErrorMessage(error)));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      },
+    );
+  });
+}
+
+async function sendMark(codigo, ubicacion) {
   const response = await fetch(APPS_SCRIPT_URL, {
     method: "POST",
-    body: JSON.stringify({ codigo }),
+    body: JSON.stringify({ codigo, ubicacion }),
     headers: {
       "Content-Type": "text/plain;charset=utf-8",
     },
@@ -162,10 +230,22 @@ form.addEventListener("submit", async (event) => {
   }
 
   setLoading(true);
-  setStatus("info", "Registrando", "Validando el codigo en Google Sheets...");
+  setStatus(
+    "info",
+    "Solicitando ubicacion",
+    "Acepta el permiso de ubicacion para continuar con la marcacion.",
+  );
 
   try {
-    const result = await sendMark(codigo);
+    const ubicacion = await getCurrentLocation();
+
+    setStatus(
+      "info",
+      "Registrando",
+      "Validando el codigo y la ubicacion en Google Sheets...",
+    );
+
+    const result = await sendMark(codigo, ubicacion);
 
     if (!result.ok) {
       setStatus("error", "Marcacion rechazada", result.message, result);
